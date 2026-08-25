@@ -1,0 +1,130 @@
+<div id="countdown-widget">
+  <div id="countdown-title">Days until...</div>
+  <div id="countdown-content"></div>
+</div>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;
+  }
+  #countdown-widget {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #ffffff;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 10px;
+    background: linear-gradient(to bottom, rgba(168, 66, 12, 0.88), rgba(15, 10, 8, 0.8));
+    border-radius: 8px;
+  }
+  #countdown-title {
+    font-size: 1.2em;
+    font-weight: 700;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+  }
+  #countdown-content {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .countdown-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+    padding-bottom: 3px;
+  }
+  .countdown-label {
+    font-size: 1.05em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-right: 8px;
+  }
+  .countdown-days {
+    font-size: 1em;
+    font-weight: 700;
+    color: #ffffff;
+    white-space: nowrap;
+  }
+</style>
+<script>
+(function () {
+  // ---- EDIT ME ----
+  // "once" items need a specific YYYY-MM-DD and drop off the list
+  // automatically once they've passed (update yearly as new dates come out).
+  // "recurring" items only need month/day and auto-advance to next year
+  // once passed — good fit for birthdays, no yearly maintenance needed.
+  var COUNTDOWNS = [
+    { emoji: "🦃", label: "Thanksgiving Break", type: "once", date: "2026-11-23" },
+    { emoji: "❄️", label: "Winter Break", type: "once", date: "2026-12-21" },
+    { emoji: "🌷", label: "Spring Break", type: "once", date: "2027-03-29" },
+    { emoji: "☀️", label: "Summer Break", type: "once", date: "2027-06-04" },
+    { emoji: "🏃", label: "Half Marathon", type: "once", date: "2026-10-24" },
+    { emoji: "🎂", label: "Child_1's Birthday", type: "recurring", month: 11, day: 1 },
+    { emoji: "🎂", label: "Childe_2's Birthday", type: "recurring", month: 12, day: 1 },
+  ];
+  // ---- END EDIT ME ----
+  function daysUntil(target) {
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var diffMs = target.getTime() - today.getTime();
+    return Math.round(diffMs / 86400000);
+  }
+  function nextOccurrence(month, day) {
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var year = today.getFullYear();
+    var candidate = new Date(year, month - 1, day);
+    if (candidate.getTime() < today.getTime()) {
+      candidate = new Date(year + 1, month - 1, day);
+    }
+    return candidate;
+  }
+  function buildRows() {
+    var rows = COUNTDOWNS.map(function (item) {
+      var target;
+      if (item.type === "recurring") {
+        target = nextOccurrence(item.month, item.day);
+      } else {
+        var parts = item.date.split("-");
+        target = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      }
+      return {
+        emoji: item.emoji,
+        label: item.label,
+        days: daysUntil(target),
+      };
+    });
+    // Drop one-time events that have already passed. Recurring items never
+    // go negative since nextOccurrence() always rolls forward to next year.
+    rows = rows.filter(function (r) {
+      return r.days >= 0;
+    });
+    rows.sort(function (a, b) {
+      return a.days - b.days;
+    });
+    return rows;
+  }
+  function render() {
+    var rows = buildRows();
+    var el = document.getElementById("countdown-content");
+    el.innerHTML = rows
+      .map(function (r) {
+        var daysText = r.days === 0 ? "Today!" : r.days;
+        return (
+          '<div class="countdown-row">' +
+          '<span class="countdown-label">' + r.emoji + " " + r.label + "</span>" +
+          '<span class="countdown-days">' + daysText + "</span>" +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+  render();
+  setInterval(render, 60 * 60 * 1000); // refresh hourly so it rolls to the next day automatically
+})();
+</script>
