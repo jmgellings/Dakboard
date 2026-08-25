@@ -1,0 +1,332 @@
+<!--
+  ============================================================
+  DAKboard School Lunch Menu Widget
+  ============================================================
+
+  WHAT THIS DOES
+  Shows the current school week's lunch menu (Mon-Fri), grouped into
+  Entrees / Vegetables, with today's row highlighted. Pulls live from
+  MealViewer's own (undocumented) JSON API — no backend/server needed,
+  it's a self-contained Widget Block.
+
+  REQUIREMENTS
+  - A DAKboard Custom Screen with the Widget Block feature (paid plans).
+  - Your school's lunch menu must be hosted on MealViewer
+    (schools.mealviewer.com) — this won't work for other menu providers.
+
+  SETUP
+  1. Find your school's MealViewer slug: go to
+     schools.mealviewer.com, find your school, and copy the last part
+     of the URL (e.g. "schools.mealviewer.com/school/YourSchoolName"
+     -> SCHOOL_KEY is "YourSchoolName"). Paste it in below.
+  2. IMPORTANT — verify your feed's format before trusting this as-is:
+     open https://api.mealviewer.com/api/v4/school/YOUR_SCHOOL_KEY/MM-DD-YYYY/MM-DD-YYYY/
+     in a browser (use today's date, MM-DD-YYYY, in both spots) and look
+     at the item_Type values in the response. This script assumes
+     "Choice of N ___" formatting (e.g. "Choice of 1 Entree") — some
+     districts use a different format (e.g. plain "VEGETABLES"), which
+     would need normalizeCategory() adjusted to match.
+  3. Check EXCLUDE_KEYWORDS below — these are standing/always-available
+     items specific to OP's district (things like a daily backup entree
+     option). You'll likely see different repeat offenders at your own
+     school; adjust the list after watching it for a few days.
+  4. Paste the whole file into a DAKboard Widget Block.
+
+  KNOWN LIMITATIONS
+  - MealViewer's API isn't officially documented or supported for this
+    kind of use — it's what their own site calls internally. It could
+    change or break without notice.
+  - Only shows Entrees and Vegetables by default (Fruit is deliberately
+    excluded since it tends to be the same options every day) — edit
+    CATEGORY_ORDER to change this.
+  - Refreshes every 4 hours (menus rarely change once posted) — adjust
+    the setInterval value at the bottom to change this.
+  ============================================================
+-->
+<div id="lunch-widget">
+  <div id="lunch-content">Loading lunch menu…</div>
+</div>
+
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;
+  }
+  #lunch-widget {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #ffffff;
+    padding: 10px;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    background: linear-gradient(to right, rgba(138, 84, 0, 0.88), rgba(15, 10, 8, 0.8));
+    border-radius: 8px;
+  }
+  #lunch-content .lunch-day {
+    margin-top: 14px;
+    margin-bottom: 4px;
+    padding: 6px 10px;
+    border-radius: 8px;
+  }
+  #lunch-content .lunch-day.is-today {
+    background: rgba(255, 255, 255, 0.14);
+    border-left: 3px solid #ffab40;
+    padding-left: 7px;
+  }
+  #lunch-content .lunch-day-label {
+    font-size: 1.15em;
+    font-weight: 700;
+    margin-bottom: 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+    padding-bottom: 2px;
+  }
+  #lunch-content .lunch-category {
+    margin-top: 6px;
+  }
+  #lunch-content .lunch-category-label {
+    font-weight: 700;
+    font-size: 0.95em;
+    opacity: 0.9;
+  }
+  #lunch-content .lunch-items-list {
+    margin: 2px 0 4px 0;
+    padding-left: 18px;
+  }
+  #lunch-content .lunch-items-list li {
+    font-size: 0.85em;
+    line-height: 1.4;
+  }
+  #lunch-content .lunch-empty {
+    font-size: 0.9em;
+    opacity: 0.6;
+    font-style: italic;
+  }
+</style>
+
+<script>
+(function () {
+  //INSERT YOUR SCHOOL SLUG HERE
+  // IMPORTANT: this script assumes your district's MealViewer feed formats
+  // item_Type values as "Choice of N ___" (e.g. "Choice of 1 Entree",
+  // "Choice of 2 Vegetables") — that's how OP's school happens to format
+  // it, but other districts use different formats (e.g. plain values like
+  // "VEGETABLES" or "MISCELLANEOUS"). Before relying on this, open the URL
+  // below in a browser with your own school's slug swapped in and check
+  // what your actual item_Type values look like:
+  // https://api.mealviewer.com/api/v4/school/YOUR_SCHOOL_KEY/MM-DD-YYYY/MM-DD-YYYY/
+  // If your format differs, you'll need to adjust normalizeCategory()
+  // further down to match.
+  var SCHOOL_KEY = "ExampleElementarySchool";
+
+  // Display order for the grouped categories. Only categories that actually
+  // have items on a given day get rendered.
+  var CATEGORY_ORDER = ["Entrees", "Vegetables"];
+
+  // Standing entrees/sides that show up almost every day regardless of the
+  // day's actual specials (a permanent fallback line, similar to milk).
+  // Filtered out so only the day-specific rotating options remain. Match is
+  // a case-insensitive substring check, so "anytimer" catches both
+  // "Anytimer Pizza" and "Anytimers: Ham & Cheese". Add more as you spot them.
+  var EXCLUDE_KEYWORDS = [
+    "chicken wrap",
+    "uncrustable",
+    "entree salad",
+    "anytimer",
+    "carrot",
+    "cucumber",
+    "cherry tomato",
+    "vegetable juice",
+  ];
+
+  function formatDate(d) {
+    var mm = String(d.getMonth() + 1).padStart(2, "0");
+    var dd = String(d.getDate()).padStart(2, "0");
+    var yyyy = d.getFullYear();
+    return mm + "-" + dd + "-" + yyyy;
+  }
+
+  // The display week is anchored to Saturday: from Saturday through the
+  // following Friday, always show that week's Mon-Fri menu. On the next
+  // Saturday, flip to the following week's Mon-Fri. This finds the most
+  // recent Saturday on/before today, then Monday is 2 days after that.
+  function getSchoolWeek() {
+    var today = new Date();
+    var dow = today.getDay(); // 0 = Sun ... 6 = Sat
+    var daysSinceSat = (dow + 1) % 7; // Sat->0, Sun->1, Mon->2, ... Fri->6
+    var monday = new Date(today);
+    monday.setDate(monday.getDate() - daysSinceSat + 2);
+    monday.setHours(0, 0, 0, 0);
+
+    var days = [];
+    for (var i = 0; i < 5; i++) {
+      var d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  }
+
+  function toTitleCase(str) {
+    return str.replace(/\w\S*/g, function (t) {
+      return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+    });
+  }
+
+  function isSameDate(a, b) {
+    return (
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate()
+    );
+  }
+
+  function isExcluded(name) {
+    var lower = name.toLowerCase();
+    return EXCLUDE_KEYWORDS.some(function (kw) {
+      return lower.indexOf(kw) !== -1;
+    });
+  }
+
+  // OP's item_Type values look like "Choice of 1 Entree",
+  // "Choice of 2 Vegetables", "Choice of 1 Fruit". This pulls out the
+  // count and normalizes the label to a consistent plural form. Types
+  // that don't match this pattern (e.g. MILK) are ignored.
+  function normalizeCategory(rawType) {
+    var match = /^Choice of (\d+)\s+(.+)$/i.exec(rawType || "");
+    if (!match) return null;
+    var count = match[1];
+    var lower = match[2].trim().toLowerCase();
+    var label;
+    if (lower.indexOf("entree") !== -1) label = "Entrees";
+    else if (lower.indexOf("vegetable") !== -1) label = "Vegetables";
+    else if (lower.indexOf("fruit") !== -1) label = "Fruit";
+    else label = match[2].trim();
+    return { label: label, count: count };
+  }
+
+  // The real per-day menu lives at:
+  // menuSchedules[].menuBlocks[] (filtered to blockName === "Lunch")
+  //   .cafeteriaLineList.data[].foodItemList.data[]
+  // NOT in the top-level "dailyMenus", which only holds always-available
+  // items like milk choices.
+  function extractLunchCategories(data) {
+    var categories = {}; // label -> { count, items: [] }
+    var schedules = data.menuSchedules || [];
+
+    schedules.forEach(function (schedule) {
+      (schedule.menuBlocks || []).forEach(function (block) {
+        if (block.blockName !== "Lunch") return;
+
+        var lines = (block.cafeteriaLineList && block.cafeteriaLineList.data) || [];
+        lines.forEach(function (line) {
+          var items = (line.foodItemList && line.foodItemList.data) || [];
+          items.forEach(function (item) {
+            var cat = normalizeCategory(item.item_Type);
+            if (!cat || !item.item_Name) return;
+
+            var rawName = item.item_Name.trim();
+            if (isExcluded(rawName)) return;
+            var name = toTitleCase(rawName);
+
+            if (!categories[cat.label]) {
+              categories[cat.label] = { count: cat.count, items: [] };
+            }
+            if (categories[cat.label].items.indexOf(name) === -1) {
+              categories[cat.label].items.push(name);
+            }
+          });
+        });
+      });
+    });
+
+    return categories;
+  }
+
+  function fetchDay(date) {
+    var dateStr = formatDate(date);
+    var url =
+      "https://api.mealviewer.com/api/v4/school/" +
+      SCHOOL_KEY + "/" + dateStr + "/" + dateStr + "/";
+    var label = date.toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+    var isToday = isSameDate(date, new Date());
+
+    return fetch(url, { headers: { Accept: "application/json" } })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        return {
+          label: label,
+          categories: extractLunchCategories(data),
+          isToday: isToday,
+        };
+      })
+      .catch(function (err) {
+        return {
+          label: label,
+          categories: {},
+          error: err.message,
+          isToday: isToday,
+        };
+      });
+  }
+
+  function render(days) {
+    var el = document.getElementById("lunch-content");
+    el.innerHTML = days
+      .map(function (day) {
+        var hasAny = CATEGORY_ORDER.some(function (label) {
+          return day.categories[label] && day.categories[label].items.length;
+        });
+
+        var body;
+        if (!hasAny) {
+          body =
+            '<div class="lunch-empty">' +
+            (day.error ? "Unavailable" : "No menu posted") +
+            "</div>";
+        } else {
+          body = CATEGORY_ORDER.map(function (label) {
+            var cat = day.categories[label];
+            if (!cat || !cat.items.length) return "";
+            var itemsHtml = cat.items
+              .map(function (item) {
+                return "<li>" + item + "</li>";
+              })
+              .join("");
+            return (
+              '<div class="lunch-category">' +
+              '<div class="lunch-category-label">' +
+              label + " (" + cat.count + ")" +
+              "</div>" +
+              '<ul class="lunch-items-list">' + itemsHtml + "</ul>" +
+              "</div>"
+            );
+          }).join("");
+        }
+
+        return (
+          '<div class="lunch-day' + (day.isToday ? " is-today" : "") + '">' +
+          '<div class="lunch-day-label">' + day.label + "</div>" +
+          body +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+
+  function loadMenu() {
+    var days = getSchoolWeek();
+    Promise.all(days.map(fetchDay)).then(render);
+  }
+
+  loadMenu();
+  setInterval(loadMenu, 4 * 60 * 60 * 1000); // refresh every 4 hours — menus rarely change once posted
+})();
+</script>
